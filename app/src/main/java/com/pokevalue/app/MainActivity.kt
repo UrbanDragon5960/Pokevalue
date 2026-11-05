@@ -1,21 +1,27 @@
 package com.pokevalue.app
 
-import android.graphics.Bitmap
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -23,12 +29,13 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
 import java.net.URLEncoder
 import kotlinx.coroutines.*
 
 data class Card(val id:String,val name:String,val set:String,val number:String,val image:String,val gbp:Double,val priceSource:String="",val rarity:String="",val confidence:Int=0,val quantity:Int=1)
 
-class PokeState(context: android.content.Context) {
+class PokeState(context: Context) {
     private val store = CollectionStore(context)
     var screen by mutableStateOf("collection")
     var cards by mutableStateOf(store.load())
@@ -53,17 +60,26 @@ class PokeState(context: android.content.Context) {
 
 @Composable
 fun PokeValueApp() {
-    val context=androidx.compose.ui.platform.LocalContext.current
-    val s=remember { PokeState(context.applicationContext) }
-    MaterialTheme(colorScheme=darkColorScheme()) {
-        Scaffold(bottomBar={
-            NavigationBar {
-                NavigationBarItem(s.screen=="collection",{s.screen="collection"},label={Text("Collection")},icon={})
-                NavigationBarItem(s.screen=="scan",{s.screen="scan"},label={Text("Scan")},icon={})
+    val context = LocalContext.current
+    val s = remember { PokeState(context.applicationContext) }
+    MaterialTheme(colorScheme = darkColorScheme(
+        primary = androidx.compose.ui.graphics.Color(0xFF65D8C6),
+        secondary = androidx.compose.ui.graphics.Color(0xFF8EA9FF),
+        background = androidx.compose.ui.graphics.Color(0xFF0A1020),
+        surface = androidx.compose.ui.graphics.Color(0xFF151F33),
+        surfaceVariant = androidx.compose.ui.graphics.Color(0xFF202D45)
+    )) {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            bottomBar = {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                    NavigationBarItem(s.screen == "collection", { s.screen = "collection"; s.message = "" }, label = { Text("Collection") }, icon = {})
+                    NavigationBarItem(s.screen == "scan" || s.screen == "results", { s.screen = "scan"; s.message = "" }, label = { Text("Scan cards") }, icon = {})
+                }
             }
-        }) { p ->
-            Box(Modifier.padding(p).fillMaxSize()) {
-                when(s.screen) {
+        ) { padding ->
+            Box(Modifier.padding(padding).fillMaxSize()) {
+                when (s.screen) {
                     "scan" -> Scanner(s)
                     "results" -> Results(s)
                     else -> Collection(s)
@@ -73,115 +89,167 @@ fun PokeValueApp() {
     }
 }
 
-@Composable
-fun Scanner(s:PokeState) {
-    var preview by remember { mutableStateOf<Bitmap?>(null) }
-    var query by remember { mutableStateOf("") }
+private fun createCaptureUri(context: Context): Uri {
+    val dir = File(context.cacheDir, "card-captures").apply { mkdirs() }
+    val file = File.createTempFile("pokevalue-card-", ".jpg", dir)
+    return FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+}
 
-    val camera=rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { b ->
-        preview=b
-        if(b!=null) {
-            s.ocr="Reading card text..."
-            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                .process(InputImage.fromBitmap(b,0))
-                .addOnSuccessListener { r ->
-                    s.ocr=if(r.text.isBlank()) "No text detected. Enter the card name." else "Detected: "+r.text.replace("\\n"," ").take(180)
-                    if(query.isBlank()) query=r.text.lineSequence().map{it.trim()}.firstOrNull{looksLikeCardName(it)} ?: ""
-                }
-                .addOnFailureListener { s.ocr="OCR failed. Enter the card name manually." }
+@Composable
+fun Scanner(s: PokeState) {
+    val context = LocalContext.current
+    var captureUri by remember { mutableStateOf<Uri?>(null) }
+    var query by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        val uri = captureUri
+        if (saved && uri != null) {
+            s.ocr = "Reading the full-resolution image..."
+            try {
+                TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                    .process(InputImage.fromFilePath(context, uri))
+                    .addOnSuccessListener { recognised ->
+                        val raw = recognised.text
+                        val bestName = extractBestName(raw)
+                        val number = extractCollectorNumber(raw)
+                        s.scanHint = raw
+                        s.ocr = if (raw.isBlank()) "No readable text found. Try better lighting or enter the name manually."
+                            else "Name suggestion: ${bestName.ifBlank { "not clear" }}   •   Card number: ${number.ifBlank { "not found" }}"
+                        if (bestName.isNotBlank()) query = bestName
+                    }
+                    .addOnFailureListener { s.ocr = "Couldn't read this image. Try again in brighter, even lighting." }
+            } catch (e: Exception) {
+                s.ocr = "Couldn't open the captured image. Please try again."
+            }
+        } else {
+            s.ocr = "Camera capture cancelled."
         }
     }
 
-    Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-        Text("Scan Pokémon card",style=MaterialTheme.typography.headlineMedium)
-        Text("Uses on-device OCR and TCGdex. No API key or paid account is required.")
-        Button({camera.launch(null)},Modifier.fillMaxWidth()){Text("Open camera")}
-        preview?.let { Image(it.asImageBitmap(),null,Modifier.fillMaxWidth().height(240.dp)) }
-        if(s.ocr.isNotBlank()) Text(s.ocr)
-        OutlinedTextField(query,{query=it},label={Text("Card / Pokémon name")},modifier=Modifier.fillMaxWidth())
-        Button({searchCards(s,query,s.scanHint)},enabled=query.isNotBlank()&&!s.loading,modifier=Modifier.fillMaxWidth()){Text(if(s.loading) "Searching..." else "Find card")}
-        Text("Tip: include the collector number or set name if the card has a hard-to-read name.",style=MaterialTheme.typography.bodySmall)
-        if(s.message.isNotBlank()) Text(s.message)
+    Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Scan a card", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text("Capture the whole card in focus. PokeValue reads the printed text, then checks matching card records.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(22.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = {
+                        try {
+                            captureUri = createCaptureUri(context)
+                            camera.launch(captureUri)
+                        } catch (e: Exception) {
+                            s.ocr = "Camera couldn't start: ${e.message ?: "please try again"}"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(52.dp)
+                ) { Text("Open camera and capture card") }
+                Text("Recognition tips", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("• Keep the card flat and fill most of the frame\n• Avoid glare from lights or sleeves\n• Make sure the name and collector number are sharp", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (s.ocr.isNotBlank()) Text(s.ocr, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        Text("Search manually", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                label = { Text("Card name") }, singleLine = true,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp)
+            )
+            Button(
+                onClick = { searchCards(s, query, s.scanHint) },
+                enabled = query.isNotBlank() && !s.loading,
+                modifier = Modifier.height(56.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp)
+            ) { Text(if (s.loading) "..." else "Find card") }
+        }
+        Text("OCR is a helper, not a guaranteed card identifier. Always check the set and card number in the results.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (s.message.isNotBlank()) Text(s.message, color = MaterialTheme.colorScheme.error)
     }
 }
 
-private fun extractCollectorNumber(text:String):String {
-    val pattern=Regex("""\b(\d{1,3}(?:/\d{1,3})?|[A-Z]{1,4}\d{1,3})\b""")
-    return pattern.findAll(text).map{it.groupValues[1]}.firstOrNull() ?: ""
+private fun extractCollectorNumber(text: String): String {
+    val patterns = listOf(
+        Regex("""\\b\\d{1,3}/\\d{1,3}\\b"""),
+        Regex("""\\b[A-Z]{1,4}\\d{1,3}\\b"""),
+        Regex("""\\b\\d{1,3}\\b""")
+    )
+    val lines = text.lines().map { it.trim().uppercase() }
+    for (pattern in patterns) {
+        val found = lines.asSequence().flatMap { pattern.findAll(it).map { m -> m.value } }.firstOrNull()
+        if (found != null) return found
+    }
+    return ""
 }
 
-private fun extractBestName(text:String):String {
-    val candidates=text.lines().map{it.trim()}.filter{it.isNotBlank() && looksLikeCardName(it)}
-    return candidates.maxByOrNull{scoreNameLine(it)} ?: ""
+private fun extractBestName(text: String): String {
+    val blocked = listOf("BASIC", "STAGE", "HP", "WEAKNESS", "RESISTANCE", "RETREAT", "ILLUSTRATOR", "TRAINER", "ENERGY", "POKEMON", "POKÉMON", "RULE", "RULES")
+    val candidates = text.lines().map { it.trim().replace(Regex("""\\s+"""), " ") }
+        .filter { line ->
+            line.length in 3..30 && line.count { it.isLetter() } >= 3 &&
+                line.any { it.isLetter() } && line.none { it.isDigit() } &&
+                blocked.none { line.equals(it, true) } &&
+                !line.contains("©") && !line.contains("www", true)
+        }
+    return candidates.maxByOrNull { scoreNameLine(it) } ?: ""
 }
 
-private fun scoreNameLine(line:String):Int {
-    var score=line.length.coerceAtMost(25)
-    if(line.firstOrNull()?.isUpperCase()==true) score+=8
-    if(line.any{it.isLowerCase()}) score+=5
-    if(line.any{it.isDigit()}) score-=10
-    if(line.contains("HP",true)) score-=20
+private fun scoreNameLine(line: String): Int {
+    var score = line.length.coerceAtMost(24)
+    if (line.firstOrNull()?.isUpperCase() == true) score += 8
+    if (line.any { it.isLowerCase() }) score += 5
+    if (line.contains(" ex", true) || line.endsWith(" V") || line.endsWith(" VMAX")) score += 3
+    if (line.contains("GX") || line.contains("VSTAR")) score += 2
     return score
 }
 
-private fun rankCandidates(cards:List<Card>,query:String,hint:String):List<Card> {
-    val number=Regex("""\b(\d{1,3}(?:/\d{1,3})?|[A-Z]{1,4}\d{1,3})\b""").find(hint)?.groupValues?.get(1) ?: ""
-    val q=normalise(query)
+private fun rankCandidates(cards: List<Card>, query: String, hint: String): List<Card> {
+    val number = extractCollectorNumber(hint)
+    val q = normalise(query)
     return cards.map { card ->
-        var score=0
-        val name=normalise(card.name)
-        if(name==q) score+=65 else if(name.contains(q)||q.contains(name)) score+=48
-        score+=(tokenOverlap(q,name)*20).coerceAtMost(20)
-        if(number.isNotBlank() && normalise(card.number)==normalise(number)) score+=25
-        if(card.set.isNotBlank() && hint.contains(card.set,true)) score+=10
-        card.copy(confidence=score.coerceIn(1,99))
-    }.sortedByDescending{it.confidence}
+        var score = 0
+        val name = normalise(card.name)
+        if (name == q) score += 65 else if (name.contains(q) || q.contains(name)) score += 48
+        score += (tokenOverlap(q, name) * 20).coerceAtMost(20)
+        if (number.isNotBlank() && normalise(card.number) == normalise(number)) score += 35
+        if (card.set.isNotBlank() && hint.contains(card.set, true)) score += 10
+        card.copy(confidence = score.coerceIn(1, 99))
+    }.sortedByDescending { it.confidence }
 }
 
-private fun normalise(s:String)=s.lowercase().replace("[^a-z0-9]".toRegex(),"")
-private fun tokenOverlap(a:String,b:String):Int {
-    val aa=a.chunked(3).toSet()
-    val bb=b.chunked(3).toSet()
+private fun normalise(s: String) = s.lowercase().replace("[^a-z0-9]".toRegex(), "")
+private fun tokenOverlap(a: String, b: String): Int {
+    val aa = a.chunked(3).toSet()
+    val bb = b.chunked(3).toSet()
     return aa.intersect(bb).size.coerceAtMost(5)
 }
 
-private fun looksLikeCardName(text:String):Boolean {
-    val t=text.trim()
-    if(t.length<3 || t.length>40) return false
-    if(t.count{it.isLetter()}<3) return false
-    return !t.all{it.isDigit() || it.isWhitespace() || it in "#/-"}
-}
-
-fun searchCards(s:PokeState,q:String,hint:String="") {
-    s.loading=true
-    s.message=""
+fun searchCards(s: PokeState, q: String, hint: String = "") {
+    s.loading = true
+    s.message = ""
     CoroutineScope(Dispatchers.IO).launch {
         try {
-            val encoded=URLEncoder.encode(q.trim(),"UTF-8")
-            val response=OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards?name=$encoded&pagination:itemsPerPage=25").build()).execute()
-            if(!response.isSuccessful) throw IllegalStateException("TCGdex HTTP "+response.code)
-            val body=response.body?.string().orEmpty()
-            // TCGdex v2 returns a bare JSON array for list/search endpoints.
-            // Accept the older wrapped {"data":[...]} shape as a fallback.
-            val arr=try {
-                org.json.JSONArray(body)
-            } catch(_:org.json.JSONException) {
+            val encoded = URLEncoder.encode(q.trim(), "UTF-8")
+            val response = OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards?name=$encoded&pagination:itemsPerPage=25").build()).execute()
+            if (!response.isSuccessful) throw IllegalStateException("TCGdex HTTP " + response.code)
+            val body = response.body?.string().orEmpty()
+            val arr = try { org.json.JSONArray(body) } catch (_: org.json.JSONException) {
                 JSONObject(body).optJSONArray("data") ?: org.json.JSONArray()
             }
-            val found=mutableListOf<Card>()
-            for(i in 0 until minOf(arr.length(),25)) {
-                val id=arr.optJSONObject(i)?.optString("id").orEmpty()
-                if(id.isNotBlank()) fetchCardDetail(id)?.let{found.add(it)}
+            val found = mutableListOf<Card>()
+            for (i in 0 until minOf(arr.length(), 25)) {
+                val id = arr.optJSONObject(i)?.optString("id").orEmpty()
+                if (id.isNotBlank()) fetchCardDetail(id)?.let { found.add(it) }
             }
-            val ranked=rankCandidates(found,q,hint)
+            val ranked = rankCandidates(found, q, hint)
             withContext(Dispatchers.Main) {
-                s.results=ranked
-                s.loading=false
-                s.screen="results"
-                s.message=if(ranked.isEmpty()) "No matches found. Try the Pokémon name, set name or collector number." else ranked.size.toString()+" ranked matches found."
+                s.results = ranked
+                s.loading = false
+                s.screen = "results"
+                s.message = if (ranked.isEmpty()) "No matches found. Try the Pokémon name, set name or collector number." else "${ranked.size} possible matches — check the set and number before adding."
             }
-        } catch(e:Exception) {
-            withContext(Dispatchers.Main) { s.loading=false; s.message="Search failed: "+(e.message ?: "unknown error") }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) { s.loading = false; s.message = "Search failed: " + (e.message ?: "unknown error") }
         }
     }
 }
@@ -200,10 +268,8 @@ private fun priceFromPricing(pricing: JSONObject?): Pair<Double, String> {
     val cm = pricing.optJSONObject("cardmarket")
     val eur = positivePrice(cm, "avg30", "avg7", "avg1", "avg", "trend", "low")
     if (eur > 0.0) return (eur * EUR_TO_GBP_ESTIMATE) to "Cardmarket estimate (EUR converted to GBP)"
-
     val tp = pricing.optJSONObject("tcgplayer")
-    val variants = listOf("normal", "reverse-holofoil", "holofoil", "1st-edition",
-        "1st-edition-holofoil", "unlimited", "unlimited-holofoil")
+    val variants = listOf("normal", "reverse-holofoil", "holofoil", "1st-edition", "1st-edition-holofoil", "unlimited", "unlimited-holofoil")
     for (variant in variants) {
         val usd = positivePrice(tp?.optJSONObject(variant), "marketPrice", "midPrice", "lowPrice")
         if (usd > 0.0) return (usd * USD_TO_GBP_ESTIMATE) to "TCGplayer market estimate (USD converted to GBP)"
@@ -211,13 +277,12 @@ private fun priceFromPricing(pricing: JSONObject?): Pair<Double, String> {
     return 0.0 to ""
 }
 
-private fun fetchCardDetail(id:String):Card? {
-    val safeId=URLEncoder.encode(id,"UTF-8").replace("+","%20")
-    val response=OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards/$safeId").build()).execute()
-    if(!response.isSuccessful) return null
-    val o=JSONObject(response.body?.string()?:"{}")
+private fun fetchCardDetail(id: String): Card? {
+    val safeId = URLEncoder.encode(id, "UTF-8").replace("+", "%20")
+    val response = OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards/$safeId").build()).execute()
+    if (!response.isSuccessful) return null
+    val o = JSONObject(response.body?.string() ?: "{}")
     var (gbp, source) = priceFromPricing(o.optJSONObject("pricing"))
-    // Some cards publish pricing against individual print variants rather than the card root.
     if (gbp <= 0.0) {
         val detailed = o.optJSONArray("variants_detailed")
         if (detailed != null) for (i in 0 until detailed.length()) {
@@ -226,73 +291,121 @@ private fun fetchCardDetail(id:String):Card? {
             if (priced.first > 0.0) { gbp = priced.first; source = priced.second; break }
         }
     }
-    val base=o.optString("image")
-    val setObj=o.optJSONObject("set")
-    return Card(o.optString("id"),o.optString("name"),setObj?.optString("name","")?:"",o.optString("localId"),if(base.isNotBlank()) "$base/high.webp" else "",gbp,source,o.optString("rarity",""))
+    val base = o.optString("image")
+    val setObj = o.optJSONObject("set")
+    return Card(o.optString("id"), o.optString("name"), setObj?.optString("name", "") ?: "", o.optString("localId"), if (base.isNotBlank()) "$base/high.webp" else "", gbp, source, o.optString("rarity", ""))
 }
 
 @Composable
-fun Results(s:PokeState) {
-    val context=androidx.compose.ui.platform.LocalContext.current
-    Column(Modifier.padding(16.dp)) {
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
-            Text("Card matches",style=MaterialTheme.typography.headlineSmall)
-            TextButton({s.screen="scan"}){Text("Back")}
+fun Results(s: PokeState) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Choose your card", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            TextButton({ s.screen = "scan" }) { Text("Back") }
         }
-        if(s.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if(s.message.isNotBlank()) Text(s.message)
-        LazyColumn {
-            items(s.results) { c ->
-                CardRow(c) {
-                    s.addCard(c)
-                }
+        Text(s.message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (s.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        LazyColumn(contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(s.results, key = { it.id }) { card ->
+                CardRow(card) { s.addCard(card) }
             }
         }
     }
 }
 
 @Composable
-fun CardRow(c:Card,onAdd:()->Unit) {
-    Card(Modifier.fillMaxWidth().padding(vertical=6.dp)) {
-        Row(Modifier.padding(10.dp),verticalAlignment=Alignment.CenterVertically) {
-            if(c.image.isNotBlank()) AsyncImage(c.image,c.name,Modifier.size(80.dp))
-            Column(Modifier.padding(10.dp).weight(1f)) {
-                Text(c.name,style=MaterialTheme.typography.titleMedium)
-                Text(c.set+" • #"+c.number)
-                if(c.rarity.isNotBlank()) Text(c.rarity,style=MaterialTheme.typography.bodySmall)
-                Text(if(c.gbp>0) "≈ £"+String.format("%.2f",c.gbp) else "No current price data")
-                if(c.priceSource.isNotBlank()) Text(c.priceSource,style=MaterialTheme.typography.bodySmall)
-                if(c.confidence>0) Text("Match confidence: "+c.confidence+"%",style=MaterialTheme.typography.bodySmall)
+fun CardRow(c: Card, onAdd: () -> Unit, compact: Boolean = false) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (c.image.isNotBlank()) AsyncImage(c.image, c.name, Modifier.size(if (compact) 76.dp else 92.dp))
+            Column(Modifier.padding(start = 12.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(c.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(c.set + "  •  #" + c.number, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (c.rarity.isNotBlank()) Text(c.rarity, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (c.gbp > 0) "£" + String.format("%.2f", c.gbp) else "Price unavailable", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                if (c.confidence > 0) Text("Name match: ${c.confidence}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (compact && c.quantity > 1) Text("Quantity: ${c.quantity}", style = MaterialTheme.typography.labelSmall)
             }
-            Button(onAdd){Text("Add")}
+            if (!compact) Button(onAdd, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Add") }
         }
     }
 }
 
 @Composable
-fun Collection(s:PokeState) {
-    val total=s.cards.sumOf{it.gbp*it.quantity}
-    Column(Modifier.padding(16.dp)) {
-        Text("PokeValue",style=MaterialTheme.typography.headlineLarge)
-        Text("Collection value: £"+String.format("%.2f",total),style=MaterialTheme.typography.titleLarge)
-        Text(s.cards.sumOf{it.quantity}.toString()+" cards • "+s.cards.size+" unique")
+fun Collection(s: PokeState) {
+    var filter by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf("Value") }
+    val total = s.cards.sumOf { it.gbp * it.quantity }
+    val count = s.cards.sumOf { it.quantity }
+    val filtered = s.cards.filter { it.name.contains(filter, true) || it.set.contains(filter, true) }
+        .let { list -> when (sort) {
+            "Name" -> list.sortedBy { it.name.lowercase() }
+            "Quantity" -> list.sortedByDescending { it.quantity }
+            else -> list.sortedByDescending { it.gbp * it.quantity }
+        } }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text("POKEVALUE", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text("Your collection", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            }
+            TextButton(onClick = { s.screen = "scan"; s.message = "" }) { Text("+ Add cards") }
+        }
         Spacer(Modifier.height(12.dp))
-        if(s.cards.isEmpty()) {
-            Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
-                Column(horizontalAlignment=Alignment.CenterHorizontally) {
-                    Text("No cards scanned yet.")
-                    Button({s.screen="scan"}){Text("Scan your first card")}
+        Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("ESTIMATED COLLECTION VALUE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("£" + String.format("%.2f", total), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                    Column { Text(count.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("Total cards", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Column { Text(s.cards.size.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("Unique cards", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
+        }
+        if (s.message.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(s.message, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(filter, { filter = it }, Modifier.weight(1f), singleLine = true, label = { Text("Search collection") }, shape = RoundedCornerShape(14.dp))
+            Spacer(Modifier.width(8.dp))
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                OutlinedButton(onClick = { expanded = true }) { Text("Sort") }
+                DropdownMenu(expanded, { expanded = false }) {
+                    listOf("Value", "Name", "Quantity").forEach { option ->
+                        DropdownMenuItem(text = { Text(option) }, onClick = { sort = option; expanded = false })
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        if (s.cards.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Your collection starts here", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Scan a Pokémon card to identify it and add it to your collection.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button({ s.screen = "scan" }) { Text("Scan your first card") }
+                }
+            }
+        } else if (filtered.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No cards match that search.") }
         } else {
-            LazyColumn { items(s.cards){CardRow(it){}} }
+            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                items(filtered, key = { it.id }) { card -> CardRow(card, {}, compact = true) }
+            }
         }
     }
 }
 
-private const val EUR_TO_GBP_ESTIMATE=0.86
-private const val USD_TO_GBP_ESTIMATE=0.79
-
+private const val EUR_TO_GBP_ESTIMATE = 0.86
+private const val USD_TO_GBP_ESTIMATE = 0.79
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
