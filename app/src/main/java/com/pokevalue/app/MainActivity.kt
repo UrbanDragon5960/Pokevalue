@@ -13,6 +13,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -174,9 +177,9 @@ fun Scanner(s: PokeState) {
 
 private fun extractCollectorNumber(text: String): String {
     val patterns = listOf(
-        Regex("""\\b\\d{1,3}/\\d{1,3}\\b"""),
-        Regex("""\\b[A-Z]{1,4}\\d{1,3}\\b"""),
-        Regex("""\\b\\d{1,3}\\b""")
+        Regex("""\b\d{1,3}/\d{1,3}\b"""),
+        Regex("""\b[A-Z]{1,4}\d{1,3}\b"""),
+        Regex("""\b\d{1,3}\b""")
     )
     val lines = text.lines().map { it.trim().uppercase() }
     for (pattern in patterns) {
@@ -188,7 +191,7 @@ private fun extractCollectorNumber(text: String): String {
 
 private fun extractBestName(text: String): String {
     val blocked = listOf("BASIC", "STAGE", "HP", "WEAKNESS", "RESISTANCE", "RETREAT", "ILLUSTRATOR", "TRAINER", "ENERGY", "POKEMON", "POKÉMON", "RULE", "RULES")
-    val candidates = text.lines().map { it.trim().replace(Regex("""\\s+"""), " ") }
+    val candidates = text.lines().map { it.trim().replace(Regex("""\s+"""), " ") }
         .filter { line ->
             line.length in 3..30 && line.count { it.isLetter() } >= 3 &&
                 line.any { it.isLetter() } && line.none { it.isDigit() } &&
@@ -399,6 +402,40 @@ fun CardDetail(card: Card, onBack: () -> Unit) {
 }
 
 @Composable
+private fun CollectionCardTile(card: Card, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(9.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            if (card.image.isNotBlank()) {
+                AsyncImage(
+                    model = card.image,
+                    contentDescription = card.name,
+                    modifier = Modifier.fillMaxWidth().height(190.dp)
+                )
+            } else {
+                Box(
+                    Modifier.fillMaxWidth().height(190.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) { Text("No card image", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            Text(card.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2)
+            Text(
+                if (card.quantity > 1) "Qty ${card.quantity}  •  Tap for details" else "Tap for details",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 fun Collection(s: PokeState) {
     var filter by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf("Value") }
@@ -460,8 +497,15 @@ fun Collection(s: PokeState) {
         } else if (filtered.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No cards match that search.") }
         } else {
-            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                items(filtered, key = { it.id }) { card -> CardRow(card, {}, compact = true, onClick = { s.selectedCard = card; s.screen = "detail" }) }
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                contentPadding = PaddingValues(bottom = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                gridItems(filtered, key = { it.id }) { card ->
+                    CollectionCardTile(card) { s.selectedCard = card; s.screen = "detail" }
+                }
             }
         }
     }
