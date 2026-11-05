@@ -117,11 +117,14 @@ fun Scanner(s: PokeState) {
                     .process(InputImage.fromFilePath(context, uri))
                     .addOnSuccessListener { recognised ->
                         val raw = recognised.text
-                        val bestName = extractBestName(raw)
+                        val bestName = extractBestName(recognised)
                         val number = extractCollectorNumber(raw)
                         s.scanHint = raw
-                        s.ocr = if (raw.isBlank()) "No readable text found. Try better lighting or enter the name manually."
-                            else "Name suggestion: ${bestName.ifBlank { "not clear" }}   •   Card number: ${number.ifBlank { "not found" }}"
+                        s.ocr = when {
+                            raw.isBlank() -> "No readable text found. Try brighter, even lighting and keep the card flat."
+                            bestName.isBlank() -> "I read some text, but couldn't confidently find the Pokémon name. Enter the name below; recognised text is available for checking."
+                            else -> "Suggested name: $bestName  •  Card number: ${number.ifBlank { "not found" }}. Check it before searching."
+                        }
                         if (bestName.isNotBlank()) query = bestName
                     }
                     .addOnFailureListener { s.ocr = "Couldn't read this image. Try again in brighter, even lighting." }
@@ -189,18 +192,22 @@ private fun extractCollectorNumber(text: String): String {
     return ""
 }
 
-private fun extractBestName(text: String): String {
+private fun extractBestName(text: com.google.mlkit.vision.text.Text): String {
     val blocked = listOf("BASIC", "STAGE", "HP", "WEAKNESS", "RESISTANCE", "RETREAT", "ILLUSTRATOR", "TRAINER", "ENERGY", "POKEMON", "POKÉMON", "RULE", "RULES")
-    val candidates = text.lines().map { it.trim().replace(Regex("""\s+"""), " ") }
-        .filter { line ->
-            line.length in 3..30 && line.count { it.isLetter() } >= 3 &&
-                line.any { it.isLetter() } && line.none { it.isDigit() } &&
-                blocked.none { line.equals(it, true) } &&
-                !line.contains("©") && !line.contains("www", true)
-        }
-    return candidates.maxByOrNull { scoreNameLine(it) } ?: ""
+    val lines = text.textBlocks.flatMap { it.lines }
+    val imageBottom = lines.mapNotNull { it.boundingBox?.bottom }.maxOrNull()?.toFloat() ?: 1f
+    val candidates = lines.mapNotNull { line ->
+        val value = line.text.trim().replace(Regex("""\s+"""), " ")
+        val top = line.boundingBox?.top?.toFloat() ?: imageBottom
+        val yRatio = if (imageBottom > 0f) top / imageBottom else 1f
+        if (value.length in 3..30 && value.count { it.isLetter() } >= 3 &&
+            value.none { it.isDigit() } && blocked.none { value.equals(it, true) } &&
+            !value.contains("©") && !value.contains("www", true)) value to yRatio else null
+    }
+    return candidates.filter { it.second <= 0.42f }
+        .maxByOrNull { (line, y) -> scoreNameLine(line) + ((0.42f - y) * 35f).toInt() }
+        ?.first ?: ""
 }
-
 private fun scoreNameLine(line: String): Int {
     var score = line.length.coerceAtMost(24)
     if (line.firstOrNull()?.isUpperCase() == true) score += 8
@@ -232,35 +239,48 @@ private fun tokenOverlap(a: String, b: String): Int {
 }
 
 fun searchCards(s: PokeState, q: String, hint: String = "") {
+    val cleanQuery = q.trim()
+    if (cleanQuery.isBlank()) {
+        s.message = "Enter a Pokémon or card name first."
+        return
+    }
+    if (s.loading) return
     s.loading = true
-    s.message = ""
+    s.results = emptyList()
+    s.message = "Searching TCGdex for \"$cleanQuery\"…"
+    s.screen = "results"
     CoroutineScope(Dispatchers.IO).launch {
         try {
-            val encoded = URLEncoder.encode(q.trim(), "UTF-8")
-            val response = OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards?name=$encoded&pagination:itemsPerPage=25").build()).execute()
-            if (!response.isSuccessful) throw IllegalStateException("TCGdex HTTP " + response.code)
+            val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
+            val url = "https://api.tcgdex.net/v2/en/cards?name=$encoded&pagination:itemsPerPage=20"
+            val response = OkHttpClient().newCall(Request.Builder().url(url).build()).execute()
+            if (!response.isSuccessful) throw IllegalStateException("Card database returned HTTP ${response.code}. Please try again.")
             val body = response.body?.string().orEmpty()
             val arr = try { org.json.JSONArray(body) } catch (_: org.json.JSONException) {
                 JSONObject(body).optJSONArray("data") ?: org.json.JSONArray()
             }
-            val found = mutableListOf<Card>()
-            for (i in 0 until minOf(arr.length(), 25)) {
-                val id = arr.optJSONObject(i)?.optString("id").orEmpty()
-                if (id.isNotBlank()) fetchCardDetail(id)?.let { found.add(it) }
+            val ids = (0 until minOf(arr.length(), 20)).mapNotNull { i ->
+                arr.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }
+            }.distinct()
+            val found = coroutineScope {
+                ids.map { id -> async(Dispatchers.IO) { runCatching { fetchCardDetail(id) }.getOrNull() } }
+                    .awaitAll().filterNotNull()
             }
-            val ranked = rankCandidates(found, q, hint)
+            val ranked = rankCandidates(found, cleanQuery, hint)
             withContext(Dispatchers.Main) {
                 s.results = ranked
                 s.loading = false
-                s.screen = "results"
-                s.message = if (ranked.isEmpty()) "No matches found. Try the Pokémon name, set name or collector number." else "${ranked.size} possible matches — check the set and number before adding."
+                s.message = if (ranked.isEmpty()) "No matches found. Try the Pokémon name only, or type a shorter part of the name."
+                    else "${ranked.size} matches found. Check the artwork, set and card number before adding."
             }
         } catch (e: Exception) {
-            withContext(Dispatchers.Main) { s.loading = false; s.message = "Search failed: " + (e.message ?: "unknown error") }
+            withContext(Dispatchers.Main) {
+                s.loading = false
+                s.message = "Search failed: ${e.message ?: "Please check your internet connection and try again."}"
+            }
         }
     }
 }
-
 private fun positivePrice(obj: JSONObject?, vararg keys: String): Double {
     if (obj == null) return 0.0
     for (key in keys) {
