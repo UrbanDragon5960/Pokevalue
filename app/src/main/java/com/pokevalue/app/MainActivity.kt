@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -38,6 +39,7 @@ data class Card(val id:String,val name:String,val set:String,val number:String,v
 class PokeState(context: Context) {
     private val store = CollectionStore(context)
     var screen by mutableStateOf("collection")
+    var selectedCard by mutableStateOf<Card?>(null)
     var cards by mutableStateOf(store.load())
     var results by mutableStateOf(listOf<Card>())
     var loading by mutableStateOf(false)
@@ -82,6 +84,7 @@ fun PokeValueApp() {
                 when (s.screen) {
                     "scan" -> Scanner(s)
                     "results" -> Results(s)
+                    "detail" -> s.selectedCard?.let { CardDetail(it) { s.screen = "collection" } } ?: Collection(s)
                     else -> Collection(s)
                 }
             }
@@ -315,9 +318,9 @@ fun Results(s: PokeState) {
 }
 
 @Composable
-fun CardRow(c: Card, onAdd: () -> Unit, compact: Boolean = false) {
+fun CardRow(c: Card, onAdd: () -> Unit, compact: Boolean = false, onClick: (() -> Unit)? = null) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
@@ -327,12 +330,71 @@ fun CardRow(c: Card, onAdd: () -> Unit, compact: Boolean = false) {
                 Text(c.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(c.set + "  •  #" + c.number, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (c.rarity.isNotBlank()) Text(c.rarity, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(if (c.gbp > 0) "£" + String.format("%.2f", c.gbp) else "Price unavailable", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                if (c.confidence > 0) Text("Name match: ${c.confidence}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (compact && c.quantity > 1) Text("Quantity: ${c.quantity}", style = MaterialTheme.typography.labelSmall)
+                if (!compact) Text(if (c.gbp > 0) "£" + String.format("%.2f", c.gbp) else "Price unavailable", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                if (!compact && c.confidence > 0) Text("Name match: ${c.confidence}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (compact) Text("Tap to view value" + if (c.quantity > 1) "  •  Qty ${c.quantity}" else "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (!compact) Button(onAdd, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Add") }
         }
+    }
+}
+
+
+@Composable
+fun CardDetail(card: Card, onBack: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("‹ Collection") }
+            Spacer(Modifier.weight(1f))
+            Text("CARD DETAILS", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (card.image.isNotBlank()) {
+                    AsyncImage(
+                        model = card.image,
+                        contentDescription = card.name,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)
+                    )
+                }
+                Text(card.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    listOf(card.set, if (card.number.isNotBlank()) "#${card.number}" else "").filter { it.isNotBlank() }.joinToString("  •  "),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (card.rarity.isNotBlank()) Text(card.rarity, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("ESTIMATED CARD VALUE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (card.gbp > 0.0) "£" + String.format("%.2f", card.gbp) else "Price unavailable",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                if (card.priceSource.isNotBlank()) Text(card.priceSource, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Quantity owned: ${card.quantity}", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back to collection") }
     }
 }
 
@@ -399,7 +461,7 @@ fun Collection(s: PokeState) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No cards match that search.") }
         } else {
             LazyColumn(contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                items(filtered, key = { it.id }) { card -> CardRow(card, {}, compact = true) }
+                items(filtered, key = { it.id }) { card -> CardRow(card, {}, compact = true, onClick = { s.selectedCard = card; s.screen = "detail" }) }
             }
         }
     }
