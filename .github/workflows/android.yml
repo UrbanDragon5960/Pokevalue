@@ -11,10 +11,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.0'
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses >/dev/null || true
       - name: Compile and test
         run: gradle assembleDebug test --stacktrace
       - name: Verify APK exists
