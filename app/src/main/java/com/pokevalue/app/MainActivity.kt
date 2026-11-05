@@ -25,7 +25,7 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import kotlinx.coroutines.*
 
-data class Card(val id:String,val name:String,val set:String,val number:String,val image:String,val gbp:Double,val priceSource:String="",val quantity:Int=1)
+data class Card(val id:String,val name:String,val set:String,val number:String,val image:String,val gbp:Double,val priceSource:String="",val rarity:String="",val confidence:Int=0,val quantity:Int=1)
 
 class PokeState(context: android.content.Context) {
     private val store = CollectionStore(context)
@@ -35,6 +35,7 @@ class PokeState(context: android.content.Context) {
     var loading by mutableStateOf(false)
     var message by mutableStateOf("")
     var ocr by mutableStateOf("")
+    var scanHint by mutableStateOf("")
 }
 
 @Composable
@@ -85,9 +86,50 @@ fun Scanner(s:PokeState) {
         preview?.let { Image(it.asImageBitmap(),null,Modifier.fillMaxWidth().height(240.dp)) }
         if(s.ocr.isNotBlank()) Text(s.ocr)
         OutlinedTextField(query,{query=it},label={Text("Card / Pokémon name")},modifier=Modifier.fillMaxWidth())
-        Button({searchCards(s,query)},enabled=query.isNotBlank()&&!s.loading,modifier=Modifier.fillMaxWidth()){Text(if(s.loading) "Searching..." else "Find card")}
+        Button({searchCards(s,query,s.scanHint)},enabled=query.isNotBlank()&&!s.loading,modifier=Modifier.fillMaxWidth()){Text(if(s.loading) "Searching..." else "Find card")}
+        Text("Tip: include the collector number or set name if the card has a hard-to-read name.",style=MaterialTheme.typography.bodySmall)
         if(s.message.isNotBlank()) Text(s.message)
     }
+}
+
+private fun extractCollectorNumber(text:String):String {
+    val pattern=Regex("""\b(\d{1,3}(?:/\d{1,3})?|[A-Z]{1,4}\d{1,3})\b""")
+    return pattern.findAll(text).map{it.groupValues[1]}.firstOrNull() ?: ""
+}
+
+private fun extractBestName(text:String):String {
+    val candidates=text.lines().map{it.trim()}.filter{it.isNotBlank() && looksLikeCardName(it)}
+    return candidates.maxByOrNull{scoreNameLine(it)} ?: ""
+}
+
+private fun scoreNameLine(line:String):Int {
+    var score=line.length.coerceAtMost(25)
+    if(line.firstOrNull()?.isUpperCase()==true) score+=8
+    if(line.any{it.isLowerCase()}) score+=5
+    if(line.any{it.isDigit()}) score-=10
+    if(line.contains("HP",true)) score-=20
+    return score
+}
+
+private fun rankCandidates(cards:List<Card>,query:String,hint:String):List<Card> {
+    val number=Regex("""\b(\d{1,3}(?:/\d{1,3})?|[A-Z]{1,4}\d{1,3})\b""").find(hint)?.groupValues?.get(1) ?: ""
+    val q=normalise(query)
+    return cards.map { card ->
+        var score=0
+        val name=normalise(card.name)
+        if(name==q) score+=65 else if(name.contains(q)||q.contains(name)) score+=48
+        score+=(tokenOverlap(q,name)*20).coerceAtMost(20)
+        if(number.isNotBlank() && normalise(card.number)==normalise(number)) score+=25
+        if(card.set.isNotBlank() && hint.contains(card.set,true)) score+=10
+        card.copy(confidence=score.coerceIn(1,99))
+    }.sortedByDescending{it.confidence}
+}
+
+private fun normalise(s:String)=s.lowercase().replace("[^a-z0-9]".toRegex(),"")
+private fun tokenOverlap(a:String,b:String):Int {
+    val aa=a.chunked(3).toSet()
+    val bb=b.chunked(3).toSet()
+    return aa.intersect(bb).size.coerceAtMost(5)
 }
 
 private fun looksLikeCardName(text:String):Boolean {
@@ -97,26 +139,27 @@ private fun looksLikeCardName(text:String):Boolean {
     return !t.all{it.isDigit() || it.isWhitespace() || it in "#/-"}
 }
 
-fun searchCards(s:PokeState,q:String) {
+fun searchCards(s:PokeState,q:String,hint:String="") {
     s.loading=true
     s.message=""
     CoroutineScope(Dispatchers.IO).launch {
         try {
             val encoded=URLEncoder.encode(q.trim(),"UTF-8")
-            val response=OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards?name=$encoded").build()).execute()
+            val response=OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards?name=$encoded&pagination:itemsPerPage=25").build()).execute()
             if(!response.isSuccessful) throw IllegalStateException("TCGdex HTTP "+response.code)
             val data=JSONObject(response.body?.string()?:"{}")
             val arr=data.optJSONArray("data")
             val found=mutableListOf<Card>()
-            if(arr!=null) for(i in 0 until minOf(arr.length(),10)) {
+            if(arr!=null) for(i in 0 until minOf(arr.length(),25)) {
                 val id=arr.getJSONObject(i).optString("id")
                 if(id.isNotBlank()) fetchCardDetail(id)?.let{found.add(it)}
             }
+            val ranked=rankCandidates(found,q,hint)
             withContext(Dispatchers.Main) {
-                s.results=found
+                s.results=ranked
                 s.loading=false
                 s.screen="results"
-                s.message=if(found.isEmpty()) "No matches found. Try the Pokémon name or collector number." else found.size.toString()+" possible matches found."
+                s.message=if(ranked.isEmpty()) "No matches found. Try the Pokémon name, set name or collector number." else ranked.size.toString()+" ranked matches found."
             }
         } catch(e:Exception) {
             withContext(Dispatchers.Main) { s.loading=false; s.message="Search failed: "+(e.message ?: "unknown error") }
@@ -143,7 +186,8 @@ private fun fetchCardDetail(id:String):Card? {
         }
     }
     val base=o.optString("image")
-    return Card(o.optString("id"),o.optString("name"),o.optJSONObject("set")?.optString("name","")?:"",o.optString("localId"),if(base.isNotBlank()) "$base/high.webp" else "",gbp,source)
+    val setObj=o.optJSONObject("set")
+    return Card(o.optString("id"),o.optString("name"),setObj?.optString("name","")?:"",o.optString("localId"),if(base.isNotBlank()) "$base/high.webp" else "",gbp,source,o.optString("rarity",""))
 }
 
 @Composable
@@ -177,8 +221,10 @@ fun CardRow(c:Card,onAdd:()->Unit) {
             Column(Modifier.padding(10.dp).weight(1f)) {
                 Text(c.name,style=MaterialTheme.typography.titleMedium)
                 Text(c.set+" • #"+c.number)
+                if(c.rarity.isNotBlank()) Text(c.rarity,style=MaterialTheme.typography.bodySmall)
                 Text(if(c.gbp>0) "≈ £"+String.format("%.2f",c.gbp) else "No current price data")
                 if(c.priceSource.isNotBlank()) Text(c.priceSource,style=MaterialTheme.typography.bodySmall)
+                if(c.confidence>0) Text("Match confidence: "+c.confidence+"%",style=MaterialTheme.typography.bodySmall)
             }
             Button(onAdd){Text("Add")}
         }
