@@ -156,6 +156,10 @@ fun Scanner(s: PokeState) {
                 Text("Recognition tips", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text("• Keep the card flat and fill most of the frame\n• Avoid glare from lights or sleeves\n• Make sure the name and collector number are sharp", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (s.ocr.isNotBlank()) Text(s.ocr, color = MaterialTheme.colorScheme.primary)
+                if (s.scanHint.isNotBlank()) {
+                    Text("Text detected on card", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(s.scanHint.take(280), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 6)
+                }
             }
         }
         Text("Search manually", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
