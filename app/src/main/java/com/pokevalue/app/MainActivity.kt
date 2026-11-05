@@ -3,6 +3,7 @@ package com.pokevalue.app
 import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -254,3 +255,11 @@ fun Collection(s:PokeState) {
 
 private const val EUR_TO_GBP_ESTIMATE=0.86
 private const val USD_TO_GBP_ESTIMATE=0.79
+
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { PokeValueApp() }
+    }
+}
