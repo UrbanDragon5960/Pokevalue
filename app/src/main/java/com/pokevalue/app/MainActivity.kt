@@ -37,6 +37,18 @@ class PokeState(context: android.content.Context) {
     var message by mutableStateOf("")
     var ocr by mutableStateOf("")
     var scanHint by mutableStateOf("")
+    fun addCard(card: Card) {
+        val existing = cards.indexOfFirst { it.id == card.id }
+        cards = if (existing < 0) cards + card else cards.mapIndexed { index, old ->
+            if (index == existing) old.copy(quantity = old.quantity + 1,
+                gbp = if (old.gbp > 0.0) old.gbp else card.gbp,
+                priceSource = if (old.priceSource.isNotBlank()) old.priceSource else card.priceSource)
+            else old
+        }
+        store.save(cards)
+        message = "${card.name} added to your collection."
+        screen = "collection"
+    }
 }
 
 @Composable
@@ -174,22 +186,44 @@ fun searchCards(s:PokeState,q:String,hint:String="") {
     }
 }
 
+private fun positivePrice(obj: JSONObject?, vararg keys: String): Double {
+    if (obj == null) return 0.0
+    for (key in keys) {
+        val value = obj.optDouble(key, 0.0)
+        if (value.isFinite() && value > 0.0) return value
+    }
+    return 0.0
+}
+
+private fun priceFromPricing(pricing: JSONObject?): Pair<Double, String> {
+    if (pricing == null) return 0.0 to ""
+    val cm = pricing.optJSONObject("cardmarket")
+    val eur = positivePrice(cm, "avg30", "avg7", "avg1", "avg", "trend", "low")
+    if (eur > 0.0) return (eur * EUR_TO_GBP_ESTIMATE) to "Cardmarket estimate (EUR converted to GBP)"
+
+    val tp = pricing.optJSONObject("tcgplayer")
+    val variants = listOf("normal", "reverse-holofoil", "holofoil", "1st-edition",
+        "1st-edition-holofoil", "unlimited", "unlimited-holofoil")
+    for (variant in variants) {
+        val usd = positivePrice(tp?.optJSONObject(variant), "marketPrice", "midPrice", "lowPrice")
+        if (usd > 0.0) return (usd * USD_TO_GBP_ESTIMATE) to "TCGplayer market estimate (USD converted to GBP)"
+    }
+    return 0.0 to ""
+}
+
 private fun fetchCardDetail(id:String):Card? {
     val safeId=URLEncoder.encode(id,"UTF-8").replace("+","%20")
     val response=OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards/$safeId").build()).execute()
     if(!response.isSuccessful) return null
     val o=JSONObject(response.body?.string()?:"{}")
-    val pricing=o.optJSONObject("pricing")
-    val cm=pricing?.optJSONObject("cardmarket")
-    val tp=pricing?.optJSONObject("tcgplayer")
-    var gbp=0.0
-    var source=""
-    val eur=cm?.optDouble("avg30",0.0) ?: cm?.optDouble("trend",0.0) ?: 0.0
-    if(eur>0) { gbp=eur*EUR_TO_GBP_ESTIMATE; source="Cardmarket 30-day average" }
-    else {
-        for(v in listOf("normal","reverse-holofoil","holofoil","1st-edition","1st-edition-holofoil","unlimited","unlimited-holofoil")) {
-            val usd=tp?.optJSONObject(v)?.optDouble("marketPrice",0.0) ?: 0.0
-            if(usd>0) { gbp=usd*USD_TO_GBP_ESTIMATE; source="TCGplayer market estimate"; break }
+    var (gbp, source) = priceFromPricing(o.optJSONObject("pricing"))
+    // Some cards publish pricing against individual print variants rather than the card root.
+    if (gbp <= 0.0) {
+        val detailed = o.optJSONArray("variants_detailed")
+        if (detailed != null) for (i in 0 until detailed.length()) {
+            val variant = detailed.optJSONObject(i) ?: continue
+            val priced = priceFromPricing(variant.optJSONObject("pricing"))
+            if (priced.first > 0.0) { gbp = priced.first; source = priced.second; break }
         }
     }
     val base=o.optString("image")
@@ -210,10 +244,7 @@ fun Results(s:PokeState) {
         LazyColumn {
             items(s.results) { c ->
                 CardRow(c) {
-                    val old=s.cards.find{it.id==c.id}
-                    s.cards=if(old==null) s.cards+c else s.cards.map{if(it.id==c.id) it.copy(quantity=it.quantity+1) else it}
-                    CollectionStore(context.applicationContext).save(s.cards)
-                    s.screen="collection"
+                    s.addCard(c)
                 }
             }
         }
