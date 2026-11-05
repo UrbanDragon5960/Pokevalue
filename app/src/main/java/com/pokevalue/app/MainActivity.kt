@@ -34,9 +34,9 @@ class MainActivity : ComponentActivity() {
 
 data class Card(val id:String,val name:String,val set:String,val number:String,val image:String,val gbp:Double,val quantity:Int=1)
 
-class PokeState {
+class PokeState(context: android.content.Context) {\n    private val store = CollectionStore(context)\n
     var screen by mutableStateOf("collection")
-    var cards by mutableStateOf(listOf<Card>())
+    var cards by mutableStateOf(store.load())
     var results by mutableStateOf(listOf<Card>())
     var loading by mutableStateOf(false)
     var message by mutableStateOf("")
@@ -45,7 +45,7 @@ class PokeState {
 
 @Composable
 fun PokeValueApp() {
-    val s = remember { PokeState() }
+    val context = androidx.compose.ui.platform.LocalContext.current\n    val s = remember { PokeState(context.applicationContext) }
     MaterialTheme(colorScheme = darkColorScheme()) {
         Scaffold(bottomBar = {
             NavigationBar {
