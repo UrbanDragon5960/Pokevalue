@@ -148,11 +148,17 @@ fun searchCards(s:PokeState,q:String,hint:String="") {
             val encoded=URLEncoder.encode(q.trim(),"UTF-8")
             val response=OkHttpClient().newCall(Request.Builder().url("https://api.tcgdex.net/v2/en/cards?name=$encoded&pagination:itemsPerPage=25").build()).execute()
             if(!response.isSuccessful) throw IllegalStateException("TCGdex HTTP "+response.code)
-            val data=JSONObject(response.body?.string()?:"{}")
-            val arr=data.optJSONArray("data")
+            val body=response.body?.string().orEmpty()
+            // TCGdex v2 returns a bare JSON array for list/search endpoints.
+            // Accept the older wrapped {"data":[...]} shape as a fallback.
+            val arr=try {
+                org.json.JSONArray(body)
+            } catch(_:org.json.JSONException) {
+                JSONObject(body).optJSONArray("data") ?: org.json.JSONArray()
+            }
             val found=mutableListOf<Card>()
-            if(arr!=null) for(i in 0 until minOf(arr.length(),25)) {
-                val id=arr.getJSONObject(i).optString("id")
+            for(i in 0 until minOf(arr.length(),25)) {
+                val id=arr.optJSONObject(i)?.optString("id").orEmpty()
                 if(id.isNotBlank()) fetchCardDetail(id)?.let{found.add(it)}
             }
             val ranked=rankCandidates(found,q,hint)
