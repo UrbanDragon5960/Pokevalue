@@ -36,6 +36,7 @@ data class Card(val id:String,val name:String,val set:String,val number:String,v
 
 class PokeState(context: android.content.Context) {\n    private val store = CollectionStore(context)\n
     var screen by mutableStateOf("collection")
+    var apiKey by mutableStateOf(SettingsStore(context).apiKey())
     var cards by mutableStateOf(store.load())
     var results by mutableStateOf(listOf<Card>())
     var loading by mutableStateOf(false)
@@ -51,12 +52,14 @@ fun PokeValueApp() {
             NavigationBar {
                 NavigationBarItem(s.screen=="collection",{s.screen="collection"},label={Text("Collection")},icon={})
                 NavigationBarItem(s.screen=="scan",{s.screen="scan"},label={Text("Scan")},icon={})
+                NavigationBarItem(s.screen=="settings",{s.screen="settings"},label={Text("Settings")},icon={})
             }
         }) { p ->
             Box(Modifier.padding(p).fillMaxSize()) {
                 when(s.screen) {
                     "scan" -> Scanner(s)
                     "results" -> Results(s)
+                    "settings" -> SettingsScreen(s)
                     else -> Collection(s)
                 }
             }
@@ -71,14 +74,28 @@ fun Scanner(s:PokeState) {
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { b ->
         preview=b
         if(b!=null) {
-            s.ocr="Reading card..."
+            if(s.apiKey.isNotBlank()) {
+                s.ocr="Identifying card from photo..."
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val matches=VisionApi.identify(b,s.apiKey)
+                        withContext(Dispatchers.Main) {
+                            s.results=matches.map{Card(it.id,it.name,it.set,it.number,it.image,it.gbp)}
+                            s.message=if(matches.isEmpty()) "No confident visual match." else "Visual matches found."
+                            s.screen="results"
+                        }
+                    } catch(e:Exception) {
+                        withContext(Dispatchers.Main){s.ocr="Automatic scan unavailable: "+e.message+". Falling back to OCR."}
+                    }
+                }
+            }
             TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
                 .process(InputImage.fromBitmap(b,0))
                 .addOnSuccessListener { r ->
                     s.ocr=r.text
-                    query=r.text.lines().firstOrNull { it.trim().length>=3 }?.trim() ?: ""
+                    if(query.isBlank()) query=r.text.lines().firstOrNull { it.trim().length>=3 }?.trim() ?: ""
                 }
-                .addOnFailureListener { s.ocr="OCR failed. Enter the name manually." }
+                .addOnFailureListener { if(s.apiKey.isBlank()) s.ocr="OCR failed. Enter the name manually." }
         }
     }
     Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
@@ -187,5 +204,24 @@ fun Collection(s:PokeState) {
         } else {
             LazyColumn { items(s.cards){ CardRow(it){} } }
         }
+    }
+}
+
+@Composable
+fun SettingsScreen(s:PokeState) {
+    val context=androidx.compose.ui.platform.LocalContext.current
+    var key by remember(s.apiKey){mutableStateOf(s.apiKey)}
+    Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+        Text("Settings",style=MaterialTheme.typography.headlineMedium)
+        Text("Add your PTCG API key to enable automatic photo recognition and richer price data.")
+        OutlinedTextField(key,{key=it},label={Text("PTCG API key")},modifier=Modifier.fillMaxWidth())
+        Button({
+            SettingsStore(context.applicationContext).saveApiKey(key)
+            s.apiKey=key.trim()
+            s.message="API key saved on this device."
+        },modifier=Modifier.fillMaxWidth()){Text("Save key")}
+        if(s.message.isNotBlank()) Text(s.message)
+        Text("The app keeps the key locally and does not commit it to GitHub.")
+        Text("The scanner falls back to OCR + card search when no key is configured.")
     }
 }
