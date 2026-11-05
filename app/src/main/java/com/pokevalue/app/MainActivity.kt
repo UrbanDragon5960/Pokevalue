@@ -135,8 +135,9 @@ fun Scanner(s: PokeState) {
                 Button(
                     onClick = {
                         try {
-                            captureUri = createCaptureUri(context)
-                            camera.launch(captureUri)
+                            val uri = createCaptureUri(context)
+                            captureUri = uri
+                            camera.launch(uri)
                         } catch (e: Exception) {
                             s.ocr = "Camera couldn't start: ${e.message ?: "please try again"}"
                         }
@@ -307,7 +308,7 @@ fun Results(s: PokeState) {
         if (s.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(s.results, key = { it.id }) { card ->
-                CardRow(card) { s.addCard(card) }
+                CardRow(card, onAdd = { s.addCard(card) })
             }
         }
     }
