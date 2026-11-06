@@ -116,8 +116,11 @@ class SupabaseClient(context: Context) {
     }
 
     private fun validSession(original: SupabaseSession): SupabaseSession {
-        if (original.expiresAt > System.currentTimeMillis() / 1000L + 60L) return original
-        val payload = JSONObject().put("refresh_token", original.refreshToken)
+        // Auth refresh tokens rotate. Always prefer the latest persisted session so
+        // repeated requests never try to reuse an already-rotated refresh token.
+        val latest = restoreSession() ?: original
+        if (latest.expiresAt > System.currentTimeMillis() / 1000L + 60L) return latest
+        val payload = JSONObject().put("refresh_token", latest.refreshToken)
         val obj = JSONObject(request("POST", "/auth/v1/token?grant_type=refresh_token", payload, includeAuth = false))
         val user = obj.optJSONObject("user") ?: throw IOException("Your session expired. Please sign in again.")
         val renewed = SupabaseSession(
