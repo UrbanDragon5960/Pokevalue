@@ -3,8 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val supabaseUrl = providers.gradleProperty("SUPABASE_URL").orElse("https://qjpmenykhnrivdxafpzi.supabase.co").get()
-val supabasePublishableKey = providers.gradleProperty("SUPABASE_PUBLISHABLE_KEY").orElse("sb_publishable_fKJI_QHOL3NwX4M3osNSEg_ikg1_Wgx").get()
+val supabaseUrl = providers.gradleProperty("SUPABASE_URL").getOrElse("").ifBlank { "https://qjpmenykhnrivdxafpzi.supabase.co" }
+val supabasePublishableKey = providers.gradleProperty("SUPABASE_PUBLISHABLE_KEY").getOrElse("").ifBlank { "sb_publishable_fKJI_QHOL3NwX4M3osNSEg_ikg1_Wgx" }
 
 android {
     namespace = "com.pokevalue.app"
