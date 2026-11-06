@@ -46,7 +46,11 @@ On macOS/Linux:
 
 Do not commit this file or put a Supabase secret/service-role key in the Android app. The publishable key is intended for client applications; Row Level Security is what protects each user's data.
 
-For a CI build, provide the same values as protected CI secrets and pass them to Gradle as `-PSUPABASE_URL=...` and `-PSUPABASE_PUBLISHABLE_KEY=...`.
+For the GitHub Actions APK build, add two repository Actions secrets:
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
+
+In GitHub, open the repository **Settings → Secrets and variables → Actions → New repository secret**. Add each value under its matching name. The Android workflow passes them to Gradle during the build. Never add the Supabase secret/service-role key.
 
 ## 5. Authentication and sync implemented in the Android branch
 
