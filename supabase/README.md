@@ -25,3 +25,36 @@ The Android integration will read these values from local build configuration ra
 ## Important
 
 The SQL migration does not create user accounts and does not add test cards. Authentication and Android synchronisation are separate steps. Do not insert a made-up user ID; rows must use a real Supabase Auth user ID.
+
+
+## 4. Configure the Android app without committing keys
+
+The app reads these Gradle project properties:
+
+```properties
+SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_your_key
+```
+
+On a Windows development machine, put those lines in:
+
+`%USERPROFILE%\\.gradle\\gradle.properties`
+
+On macOS/Linux:
+
+`~/.gradle/gradle.properties`
+
+Do not commit this file or put a Supabase secret/service-role key in the Android app. The publishable key is intended for client applications; Row Level Security is what protects each user's data.
+
+For a CI build, provide the same values as protected CI secrets and pass them to Gradle as `-PSUPABASE_URL=...` and `-PSUPABASE_PUBLISHABLE_KEY=...`.
+
+## 5. Authentication and sync implemented in the Android branch
+
+The Android branch now includes:
+- Email/password account creation and sign-in through Supabase Auth.
+- Session persistence and refresh-token renewal.
+- Account-scoped collection reads and upserts.
+- Immediate clearing of the visible collection on sign-out.
+- One-time migration of an existing locally saved collection into the first account that signs in.
+
+Email confirmation may be required depending on the Supabase Auth settings. If enabled, the user must confirm the email before signing in.
