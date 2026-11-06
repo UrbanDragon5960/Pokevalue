@@ -40,22 +40,88 @@ import kotlinx.coroutines.*
 data class Card(val id:String,val name:String,val set:String,val number:String,val image:String,val gbp:Double,val priceSource:String="",val rarity:String="",val confidence:Int=0,val quantity:Int=1)
 
 class PokeState(context: Context) {
-    private val store = CollectionStore(context)
-    var screen by mutableStateOf("collection")
+    private val backend = SupabaseBackend()
+    private val legacyStore = CollectionStore(context)
+    private val legacyCards = legacyStore.load()
+    private var accessToken: String = ""
+    private var userId: String = ""
+    var signedInEmail by mutableStateOf("")
+    var configured = backend.isConfigured()
+    var screen by mutableStateOf("auth")
     var selectedCard by mutableStateOf<Card?>(null)
-    var cards by mutableStateOf(store.load())
+    var cards by mutableStateOf(listOf<Card>())
     var results by mutableStateOf(listOf<Card>())
     var loading by mutableStateOf(false)
+    var authLoading by mutableStateOf(false)
     var message by mutableStateOf("")
     var ocr by mutableStateOf("")
     var scanHint by mutableStateOf("")
+
+    fun signIn(email: String, password: String) = authenticate(email, password, false)
+    fun signUp(email: String, password: String) = authenticate(email, password, true)
+
+    private fun authenticate(email: String, password: String, register: Boolean) {
+        if (!configured) { message = "Account service is not configured yet. Add the Supabase project URL and anon key to the build configuration."; return }
+        if (email.isBlank() || password.length < 6) { message = "Enter a valid email and a password of at least 6 characters."; return }
+        if (authLoading) return
+        authLoading = true
+        message = if (register) "Creating your account…" else "Signing in…"
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val session = if (register) backend.signUp(email.trim(), password) else backend.signIn(email.trim(), password)
+                if (session.accessToken.isBlank()) {
+                    withContext(Dispatchers.Main) {
+                        authLoading = false
+                        message = "Account created. Check your email to confirm it, then sign in."
+                    }
+                    return@launch
+                }
+                accessToken = session.accessToken
+                userId = session.userId
+                val remote = backend.loadCards(accessToken)
+                val initialCards = if (remote.isEmpty() && legacyCards.isNotEmpty()) {
+                    backend.saveCards(accessToken, userId, legacyCards)
+                    legacyStore.save(emptyList())
+                    legacyCards
+                } else remote
+                withContext(Dispatchers.Main) {
+                    cards = initialCards
+                    signedInEmail = email.trim()
+                    authLoading = false
+                    message = "Your account collection is synced."
+                    screen = "collection"
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    authLoading = false
+                    message = e.message ?: "Couldn't connect. Check your details and internet connection."
+                }
+            }
+        }
+    }
+
+    fun signOut() {
+        accessToken = ""
+        userId = ""
+        signedInEmail = ""
+        cards = emptyList()
+        selectedCard = null
+        message = "Signed out. Your cloud collection is safe."
+        screen = "auth"
+    }
+
     fun removeCard(card: Card) {
         cards = cards.filterNot { it.id == card.id }
-        store.save(cards)
         selectedCard = null
         message = "${card.name} removed from your collection."
         screen = "collection"
+        val token = accessToken
+        CoroutineScope(Dispatchers.IO).launch {
+            try { backend.deleteCard(token, userId, card.id) }
+            catch (e: Exception) { withContext(Dispatchers.Main) { message = "Removal could not sync: ${e.message}" } }
+        }
     }
+
     fun addCard(card: Card) {
         val existing = cards.indexOfFirst { it.id == card.id }
         cards = if (existing < 0) cards + card else cards.mapIndexed { index, old ->
@@ -64,9 +130,14 @@ class PokeState(context: Context) {
                 priceSource = if (old.priceSource.isNotBlank()) old.priceSource else card.priceSource)
             else old
         }
-        store.save(cards)
+        val saved = cards.first { it.id == card.id }
         message = "${card.name} added to your collection."
         screen = "collection"
+        val token = accessToken
+        CoroutineScope(Dispatchers.IO).launch {
+            try { backend.upsertCard(token, userId, saved) }
+            catch (e: Exception) { withContext(Dispatchers.Main) { message = "Card added on this screen but cloud sync failed: ${e.message}" } }
+        }
     }
 }
 
@@ -84,7 +155,7 @@ fun PokeValueApp() {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                if (s.screen != "auth") NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                     NavigationBarItem(s.screen == "collection", { s.screen = "collection"; s.message = "" }, label = { Text("Collection") }, icon = {})
                     NavigationBarItem(s.screen == "scan" || s.screen == "results", { s.screen = "scan"; s.message = "" }, label = { Text("Scan cards") }, icon = {})
                 }
@@ -92,7 +163,7 @@ fun PokeValueApp() {
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 when (s.screen) {
-                    "scan" -> Scanner(s)
+                    "auth" -> AuthScreen(s)\n                    "scan" -> Scanner(s)
                     "results" -> Results(s)
                     "detail" -> s.selectedCard?.let { card -> CardDetail(card, onBack = { s.screen = "collection" }, onDelete = { s.removeCard(card) }) } ?: Collection(s)
                     else -> Collection(s)
@@ -108,7 +179,39 @@ private fun createCaptureUri(context: Context): Uri {
     return FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
 }
 
+
 @Composable
+fun AuthScreen(s: PokeState) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("POKEVALUE", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        Text("Your collection, anywhere", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(10.dp))
+        Text("Sign in to see your saved cards. Sign out and your collection is hidden, not deleted.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(email, { email = it }, Modifier.fillMaxWidth(), label = { Text("Email") }, singleLine = true)
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("Password (6+ characters)") }, singleLine = true)
+        Spacer(Modifier.height(14.dp))
+        Button(onClick = { s.signIn(email, password) }, enabled = !s.authLoading && s.configured, modifier = Modifier.fillMaxWidth()) {
+            Text(if (s.authLoading) "Please wait…" else "Sign in")
+        }
+        OutlinedButton(onClick = { s.signUp(email, password) }, enabled = !s.authLoading && s.configured, modifier = Modifier.fillMaxWidth()) {
+            Text("Create account")
+        }
+        if (!s.configured) {
+            Spacer(Modifier.height(12.dp))
+            Text("Account setup is awaiting the Supabase project URL and anon key.", color = MaterialTheme.colorScheme.tertiary)
+        }
+        if (s.message.isNotBlank()) Text(s.message, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 12.dp))
+    }
+}
+\n@Composable
 fun Scanner(s: PokeState) {
     val context = LocalContext.current
     var captureUri by remember { mutableStateOf<Uri?>(null) }
@@ -506,7 +609,10 @@ fun Collection(s: PokeState) {
                 Text("POKEVALUE", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Text("Your collection", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             }
-            TextButton(onClick = { s.screen = "scan"; s.message = "" }) { Text("+ Add cards") }
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton(onClick = { s.screen = "scan"; s.message = "" }) { Text("+ Add cards") }
+                TextButton(onClick = { s.signOut() }) { Text("Sign out") }
+            }
         }
         Spacer(Modifier.height(12.dp))
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
