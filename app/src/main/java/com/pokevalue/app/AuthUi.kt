@@ -20,6 +20,7 @@ fun PokeValueApp() {
     val api = remember { SupabaseClient(context.applicationContext) }
     var session by remember { mutableStateOf(api.restoreSession()) }
     var authMessage by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
 
     if (session == null) {
         AuthScreen(
@@ -69,10 +70,10 @@ fun PokeValueApp() {
         )) {
             Box(Modifier.fillMaxSize()) {
                 PokeValueMain(state) {
-                    api.signOut()
                     state.clearCollection()
                     session = null
                     authMessage = "You've signed out."
+                    scope.launch { withContext(Dispatchers.IO) { api.signOut() } }
                 }
                 if (loadingCloud) {
                     Box(
