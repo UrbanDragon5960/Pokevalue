@@ -11,7 +11,7 @@ android {
     compileSdk = 37
     defaultConfig {
         applicationId = "com.pokevalue.app"
-        minSdk = 26
+        minSdk = 23
         targetSdk = 37
         versionCode = 7
         versionName = "0.7"
