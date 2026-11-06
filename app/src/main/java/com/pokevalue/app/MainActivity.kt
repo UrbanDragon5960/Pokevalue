@@ -39,34 +39,58 @@ import kotlinx.coroutines.*
 
 data class Card(val id:String,val name:String,val set:String,val number:String,val image:String,val gbp:Double,val priceSource:String="",val rarity:String="",val confidence:Int=0,val quantity:Int=1)
 
-class PokeState(context: Context) {
+class PokeState(context: Context, private val api: SupabaseClient, private val session: SupabaseSession) {
     private val store = CollectionStore(context)
     var screen by mutableStateOf("collection")
     var selectedCard by mutableStateOf<Card?>(null)
-    var cards by mutableStateOf(store.load())
+    var cards by mutableStateOf(listOf<Card>())
     var results by mutableStateOf(listOf<Card>())
     var loading by mutableStateOf(false)
     var message by mutableStateOf("")
     var ocr by mutableStateOf("")
     var scanHint by mutableStateOf("")
+
+    fun legacyCards(): List<Card> = store.load()
+
+    fun replaceCards(value: List<Card>) {
+        cards = value
+        store.save(value)
+    }
+
+    fun clearCollection() {
+        cards = emptyList()
+        store.save(emptyList())
+    }
+
     fun addCard(card: Card) {
         val existing = cards.indexOfFirst { it.id == card.id }
-        cards = if (existing < 0) cards + card else cards.mapIndexed { index, old ->
-            if (index == existing) old.copy(quantity = old.quantity + 1,
+        val updated = if (existing < 0) cards + card else cards.mapIndexed { index, old ->
+            if (index == existing) old.copy(
+                quantity = old.quantity + 1,
                 gbp = if (old.gbp > 0.0) old.gbp else card.gbp,
-                priceSource = if (old.priceSource.isNotBlank()) old.priceSource else card.priceSource)
-            else old
+                priceSource = if (old.priceSource.isNotBlank()) old.priceSource else card.priceSource
+            ) else old
         }
-        store.save(cards)
-        message = "${card.name} added to your collection."
+        val savedCard = updated.first { it.id == card.id }
+        cards = updated
+        store.save(updated)
+        message = "Saving ${card.name} to your account..."
         screen = "collection"
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                api.saveCard(session, savedCard)
+                withContext(Dispatchers.Main) { message = "${card.name} saved to your account." }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    message = "Couldn't sync ${card.name}: ${e.message ?: "Please try again."}"
+                }
+            }
+        }
     }
 }
 
 @Composable
-fun PokeValueApp() {
-    val context = LocalContext.current
-    val s = remember { PokeState(context.applicationContext) }
+fun PokeValueMain(s: PokeState, onSignOut: () -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme(
         primary = androidx.compose.ui.graphics.Color(0xFF65D8C6),
         secondary = androidx.compose.ui.graphics.Color(0xFF8EA9FF),
@@ -87,8 +111,8 @@ fun PokeValueApp() {
                 when (s.screen) {
                     "scan" -> Scanner(s)
                     "results" -> Results(s)
-                    "detail" -> s.selectedCard?.let { CardDetail(it) { s.screen = "collection" } } ?: Collection(s)
-                    else -> Collection(s)
+                    "detail" -> s.selectedCard?.let { CardDetail(it) { s.screen = "collection" } } ?: Collection(s, onSignOut)
+                    else -> Collection(s, onSignOut)
                 }
             }
         }
@@ -460,7 +484,7 @@ private fun CollectionCardTile(card: Card, onClick: () -> Unit) {
 }
 
 @Composable
-fun Collection(s: PokeState) {
+fun Collection(s: PokeState, onSignOut: () -> Unit) {
     var filter by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf("Value") }
     val total = s.cards.sumOf { it.gbp * it.quantity }
@@ -478,7 +502,10 @@ fun Collection(s: PokeState) {
                 Text("POKEVALUE", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Text("Your collection", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             }
-            TextButton(onClick = { s.screen = "scan"; s.message = "" }) { Text("+ Add cards") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { s.screen = "scan"; s.message = "" }) { Text("+ Add cards") }
+                TextButton(onClick = onSignOut) { Text("Sign out") }
+            }
         }
         Spacer(Modifier.height(12.dp))
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
