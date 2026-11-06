@@ -49,6 +49,13 @@ class PokeState(context: Context) {
     var message by mutableStateOf("")
     var ocr by mutableStateOf("")
     var scanHint by mutableStateOf("")
+    fun removeCard(card: Card) {
+        cards = cards.filterNot { it.id == card.id }
+        store.save(cards)
+        selectedCard = null
+        message = "${card.name} removed from your collection."
+        screen = "collection"
+    }
     fun addCard(card: Card) {
         val existing = cards.indexOfFirst { it.id == card.id }
         cards = if (existing < 0) cards + card else cards.mapIndexed { index, old ->
@@ -87,7 +94,7 @@ fun PokeValueApp() {
                 when (s.screen) {
                     "scan" -> Scanner(s)
                     "results" -> Results(s)
-                    "detail" -> s.selectedCard?.let { CardDetail(it) { s.screen = "collection" } } ?: Collection(s)
+                    "detail" -> s.selectedCard?.let { card -> CardDetail(card, onBack = { s.screen = "collection" }, onDelete = { s.removeCard(card) }) } ?: Collection(s)
                     else -> Collection(s)
                 }
             }
@@ -368,7 +375,23 @@ fun CardRow(c: Card, onAdd: () -> Unit, compact: Boolean = false, onClick: (() -
 
 
 @Composable
-fun CardDetail(card: Card, onBack: () -> Unit) {
+fun CardDetail(card: Card, onBack: () -> Unit, onDelete: () -> Unit) {
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { Text("Remove card?") },
+            text = { Text("Remove ${card.name} from your collection? This removes the saved entry and its quantity from this device.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteConfirmation = false; onDelete() }) {
+                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) { Text("Cancel") }
+            }
+        )
+    }
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -421,6 +444,11 @@ fun CardDetail(card: Card, onBack: () -> Unit) {
                 Text("Quantity owned: ${card.quantity}", style = MaterialTheme.typography.bodyMedium)
             }
         }
+        OutlinedButton(
+            onClick = { showDeleteConfirmation = true },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+        ) { Text("Remove from collection") }
         Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back to collection") }
     }
 }
