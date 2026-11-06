@@ -12,7 +12,13 @@ android {
         versionCode = 6
         versionName = "0.6"
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
+    val supabaseUrl = project.findProperty("SUPABASE_URL")?.toString() ?: ""
+    val supabaseAnonKey = project.findProperty("SUPABASE_ANON_KEY")?.toString() ?: ""
+    defaultConfig {
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnonKey\"")
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
 dependencies {
